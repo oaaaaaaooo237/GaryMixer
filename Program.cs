@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
@@ -15,7 +16,7 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Gary调音台")]
 [assembly: AssemblyDescription("NVIDIA GPU power limits and monitoring")]
 [assembly: AssemblyProduct("Gary调音台")]
-[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
 
 internal static class Program
 {
@@ -130,6 +131,8 @@ internal static class Broker
     internal static readonly string Sid = GetSid();
     private static readonly string TaskName = "GpuPowerTray-v1-" + Sid;
     private static readonly string PowerShell = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
+    private static readonly string HostFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "GaryMixerPowerHost");
+    private static readonly string HostPath = Path.Combine(HostFolder, "GaryMixerPowerHost.exe");
     private const string PowerShellFlags = "-NoLogo -NoProfile -NonInteractive -EncodedCommand ";
     private const int Running = 0x41301;
 
@@ -143,10 +146,14 @@ internal static class Broker
         return Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
     }
 
-    private static string ReadBroker()
+    private static byte[] ReadHost()
     {
-        using (var reader = new StreamReader(typeof(Broker).Assembly.GetManifestResourceStream("Broker.ps1")))
-            return reader.ReadToEnd();
+        using (var stream = typeof(Broker).Assembly.GetManifestResourceStream("GaryMixerPowerHost.exe"))
+        using (var output = new MemoryStream())
+        {
+            stream.CopyTo(output);
+            return output.ToArray();
+        }
     }
 
     private static dynamic Scheduler()
@@ -175,9 +182,13 @@ internal static class Broker
         if (!(bool)task.Enabled || (int)actions.Count != 1 || (int)definition.Principal.RunLevel != 1)
             throw new InvalidOperationException("后台权限任务未就绪。");
         dynamic action = actions.Item(1);
-        if (!string.Equals((string)action.Path, PowerShell, StringComparison.OrdinalIgnoreCase)
-            || (string)action.Arguments != PowerShellFlags + Encoded(ReadBroker()))
+        if (!string.Equals((string)action.Path, HostPath, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrEmpty((string)action.Arguments) || !File.Exists(HostPath))
             throw new InvalidOperationException("后台权限任务需要重新配置。");
+        using (var sha = SHA256.Create())
+        using (var host = File.OpenRead(HostPath))
+            if (!sha.ComputeHash(host).SequenceEqual(sha.ComputeHash(ReadHost())))
+                throw new InvalidOperationException("后台程序需要更新。");
         return task;
     }
 
@@ -186,24 +197,39 @@ internal static class Broker
     internal static void Configure(bool enabled)
     {
         if (enabled && IsReady()) return;
+        string location = "$hostFolder = '" + HostFolder.Replace("'", "''") + "'\n" +
+            "$hostFile = '" + HostPath.Replace("'", "''") + "'\n" +
+            "foreach ($path in $hostFolder,$hostFile) { if (([IO.Directory]::Exists($path) -or [IO.File]::Exists($path)) -and (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { exit 9 } }\n";
         string command = enabled ?
+            "[void][IO.Directory]::CreateDirectory($hostFolder)\n" +
+            "$staged = [IO.Path]::Combine($hostFolder, [guid]::NewGuid().ToString('N') + '.tmp')\n" +
+            "try {\n" +
+            "  [IO.File]::WriteAllBytes($staged, [Convert]::FromBase64String('" + Convert.ToBase64String(ReadHost()) + "'))\n" +
+            "  if ([IO.File]::Exists($hostFile)) { [IO.File]::Replace($staged, $hostFile, [NullString]::Value) } else { [IO.File]::Move($staged, $hostFile) }\n" +
+            "} finally { if ([IO.File]::Exists($staged)) { [IO.File]::Delete($staged) } }\n" +
             "$definition = $scheduler.NewTask(0)\n" +
             "$definition.RegistrationInfo.Description = 'Gary GPU power control. Sets only driver-supported GPU power limits.'\n" +
             "$definition.Principal.UserId = $user\n$definition.Principal.LogonType = 3\n$definition.Principal.RunLevel = 1\n" +
             "$definition.Settings.DisallowStartIfOnBatteries = $false\n$definition.Settings.StopIfGoingOnBatteries = $false\n" +
             "$definition.Settings.ExecutionTimeLimit = 'PT25S'\n$definition.Settings.MultipleInstances = 2\n" +
-            "$action = $definition.Actions.Create(0)\n$action.Path = '" + PowerShell + "'\n" +
-            "$action.Arguments = '" + PowerShellFlags + Encoded(ReadBroker()) + "'\n" +
+            "$action = $definition.Actions.Create(0)\n$action.Path = $hostFile\n" +
             "$action.WorkingDirectory = [Environment]::SystemDirectory\n" +
             "try { $null = $folder.RegisterTaskDefinition('" + TaskName + "', $definition, 6, $user, $null, 3, $null) } catch { exit 8 }" :
-            "try { $folder.DeleteTask('" + TaskName + "', 0) } catch { if ($_.Exception.HResult -ne -2147024894) { throw } }";
+            "try { $folder.DeleteTask('" + TaskName + "', 0) } catch { if ($_.Exception.HResult -ne -2147024894) { throw } }\n" +
+            "if ([IO.File]::Exists($hostFile)) {\n" +
+            "  $hostInUse = $false\n" +
+            "  foreach ($item in $folder.GetTasks(1)) { if ($item.Name -like 'GpuPowerTray-v1-*') { foreach ($registeredAction in $item.Definition.Actions) { if ($registeredAction.Path -eq $hostFile) { $hostInUse = $true } } } }\n" +
+            "  if (!$hostInUse) { [IO.File]::Delete($hostFile) }\n" +
+            "}";
         string script = "$ErrorActionPreference = 'Stop'\n" +
             "$user = '" + Sid + "'\nif ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne $user) { exit 7 }\n" +
             "$env:Path = [Environment]::SystemDirectory\n" +
             "$env:PSModulePath = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\\v1.0\\Modules')\n" +
-            "$scheduler = New-Object -ComObject Schedule.Service\n$scheduler.Connect()\n$folder = $scheduler.GetFolder('\\')\n" + command;
+            "$scheduler = New-Object -ComObject Schedule.Service\n$scheduler.Connect()\n$folder = $scheduler.GetFolder('\\')\n" + location + command;
+        bool elevated = IsElevated();
         var options = new ProcessStartInfo(PowerShell, PowerShellFlags + Encoded(script)) {
-            UseShellExecute = true, Verb = IsElevated() ? "" : "runas", WindowStyle = ProcessWindowStyle.Hidden,
+            UseShellExecute = !elevated, Verb = elevated ? "" : "runas", WindowStyle = ProcessWindowStyle.Hidden,
+            CreateNoWindow = elevated,
             WorkingDirectory = Environment.SystemDirectory
         };
         try

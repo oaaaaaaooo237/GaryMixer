@@ -27,6 +27,7 @@ internal sealed class MainWindow : Window
     private readonly string preview;
     private readonly int previewDpi;
     private readonly Tray.NotifyIcon tray;
+    private readonly System.Drawing.Icon trayIcon;
     private readonly Tray.ContextMenuStrip trayMenu;
     private readonly DispatcherTimer timer;
     private readonly TextBlock model, power, range, status;
@@ -157,7 +158,9 @@ internal sealed class MainWindow : Window
         trayMenu = new Tray.ContextMenuStrip();
         trayMenu.Items.Add("打开 Gary调音台", null, (sender, args) => Dispatcher.BeginInvoke((Action)RestoreWindow));
         trayMenu.Items.Add("退出", null, (sender, args) => Dispatcher.BeginInvoke(new Action(() => { exiting = true; Close(); })));
-        tray = new Tray.NotifyIcon { Icon = System.Drawing.SystemIcons.Application, Text = Title, ContextMenuStrip = trayMenu, Visible = preview == null };
+        trayIcon = System.Drawing.Icon.ExtractAssociatedIcon(Tray.Application.ExecutablePath);
+        if (trayIcon != null) Icon = System.Windows.Interop.Imaging.CreateBitmapSourceFromHIcon(trayIcon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+        tray = new Tray.NotifyIcon { Icon = trayIcon ?? System.Drawing.SystemIcons.Application, Text = Title, ContextMenuStrip = trayMenu, Visible = preview == null };
         tray.MouseClick += (sender, args) =>
         {
             if (args.Button == Tray.MouseButtons.Left) Dispatcher.BeginInvoke((Action)RestoreWindow);
@@ -170,6 +173,7 @@ internal sealed class MainWindow : Window
         {
             timer.Stop();
             tray.Dispose();
+            if (trayIcon != null) trayIcon.Dispose();
             trayMenu.Dispose();
             Application.Current.Shutdown();
         };
@@ -282,7 +286,7 @@ internal sealed class MainWindow : Window
             DrawScale();
             UpdateControls();
             SetStatus(error.Message, true);
-            if (trayStart && startupAttempts == 8) Notify(error.Message);
+            if (trayStart && startupAttempts == 8) tray.Text = Title + " · 读取显卡失败";
         }
         finally { reading = false; }
 
@@ -441,7 +445,7 @@ internal sealed class MainWindow : Window
         {
             const string message = "请先启用免弹窗设置。";
             SetStatus(message, true);
-            if (automatic && !IsVisible) Notify(message);
+            if (automatic && !IsVisible) tray.Text = Title + " · 自动设置失败";
             return;
         }
         busy = true;
@@ -459,7 +463,7 @@ internal sealed class MainWindow : Window
         {
             failed = true;
             SetStatus(error.Message, true);
-            if (automatic && !IsVisible) Notify(error.Message);
+            if (automatic && !IsVisible) tray.Text = Title + " · 自动设置失败";
         }
         finally { busy = false; UpdateControls(); }
         if (failed)
@@ -534,5 +538,4 @@ internal sealed class MainWindow : Window
         status.Foreground = error ? Amber : Muted;
     }
 
-    private void Notify(string text) { tray.ShowBalloonTip(6000, Title, text, Tray.ToolTipIcon.Warning); }
 }

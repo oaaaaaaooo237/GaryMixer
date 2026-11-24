@@ -2,14 +2,14 @@
 
 Gary调音台是一个轻量的 Windows 托盘工具，用来调整 NVIDIA 显卡的功率上限。可以点选 **350 / 450 / 550 W**，也可以拖动推子、输入瓦数或恢复驱动默认值。
 
-[下载 1.0](https://github.com/oaaaaaaooo237/GaryMixer/releases/tag/v1.0)
+[下载最新版](https://github.com/oaaaaaaooo237/GaryMixer/releases/latest)
 
 ![Gary调音台界面](docs/gary-mixer.png)
 
 ## 使用
 
 1. 运行 `GaryMixerSetup.exe`，在安装时确认一次 Windows 管理员授权。安装器会配置后台任务，并用普通权限验证功率设置。
-2. 安装验证通过后，日常切换功率无需再次确认 UAC。关闭窗口会缩到托盘，点击托盘图标可恢复。
+2. 安装验证通过后，日常切换功率不会弹出确认或控制台窗口。结果显示在底部状态栏。关闭窗口会缩到托盘，点击托盘图标可恢复。
 3. 如需登录后自动调节，在「启动设置」中勾选「登录 Windows 时启动到托盘」和「启动时自动应用」，输入瓦数并保存。也可以在任务管理器的「启动应用」中开关登录启动。
 
 `GpuPowerTray.exe` 是便携版，可以直接运行。首次使用调节功能时，需要在程序内启用免弹窗设置。
